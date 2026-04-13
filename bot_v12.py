@@ -1130,7 +1130,7 @@ def main() -> None:
     p.add_argument("--symbol",                   default="SOLUSDT")
     p.add_argument("--interval",                 default="15m")
     p.add_argument("--htf-interval",             default="1h")
-    p.add_argument("--limit",         type=int,  default=8000)
+    p.add_argument("--limit",         type=int,  default=10000)
     p.add_argument("--initial-balance",          type=float, default=10.0)
     p.add_argument("--risk-pct",                 type=float, default=0.25,
                    help="Fraction of balance per trade (compound sizing, default 0.25)")

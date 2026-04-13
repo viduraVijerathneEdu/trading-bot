@@ -1,0 +1,1 @@
+web: python3 trading_server.py --tp-atr-mult 1.2 --sl-atr-mult 0.6 --port 8765
