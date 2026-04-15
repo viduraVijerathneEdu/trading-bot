@@ -503,7 +503,7 @@ if _STATIC_DIR.is_dir():
     @app.get("/{path:path}")
     async def serve_spa(path: str):
         """Catch-all for SPA client-side routing."""
-        file_path = _STATIC_DIR / path
-        if file_path.is_file():
+        file_path = (_STATIC_DIR / path).resolve()
+        if file_path.is_relative_to(_STATIC_DIR.resolve()) and file_path.is_file():
             return FileResponse(file_path)
         return FileResponse(_STATIC_DIR / "index.html")
