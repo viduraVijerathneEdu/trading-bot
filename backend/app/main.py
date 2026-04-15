@@ -63,6 +63,8 @@ def _get_model():
     if model is None:
         TradingModel, _ = _lazy_ml()
         model = TradingModel()
+        if model.load():
+            logger.info("Pre-trained model loaded successfully")
     return model
 
 
