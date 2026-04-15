@@ -68,13 +68,8 @@ def _get_model():
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    """Load model on startup if available."""
-    try:
-        m = _get_model()
-        if m.load():
-            logger.info("Pre-trained model loaded successfully")
-    except Exception as e:
-        logger.warning(f"Could not load model on startup: {e}")
+    """Application lifespan. Model loading is deferred to first use to save memory."""
+    logger.info("Trading bot API starting up (model loads on first use)")
     yield
     if engine and hasattr(engine, 'is_running') and engine.is_running:
         engine.stop()
