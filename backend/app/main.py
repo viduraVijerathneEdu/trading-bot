@@ -7,8 +7,12 @@ import os
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 
+from pathlib import Path
+
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.config import BinanceConfig, TradingConfig, TRADING_PAIRS
@@ -483,3 +487,23 @@ async def get_signals():
             logger.warning(f"Error getting signal for {pair}: {e}")
 
     return {"signals": sorted(signals, key=lambda s: s["confidence"], reverse=True)}
+
+
+# ── Static Frontend Serving (must be AFTER all API routes) ─────────────────
+
+_STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+if _STATIC_DIR.is_dir():
+    @app.get("/")
+    async def serve_index():
+        return FileResponse(_STATIC_DIR / "index.html")
+
+    app.mount("/assets", StaticFiles(directory=_STATIC_DIR / "assets"), name="static-assets")
+
+    @app.get("/{path:path}")
+    async def serve_spa(path: str):
+        """Catch-all for SPA client-side routing."""
+        file_path = _STATIC_DIR / path
+        if file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(_STATIC_DIR / "index.html")

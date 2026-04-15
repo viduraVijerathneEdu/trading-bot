@@ -3,6 +3,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { Activity, Bot, TrendingUp, TrendingDown, DollarSign, BarChart3, Settings, Play, Square, RefreshCw, Plus, History, Zap, AlertTriangle, Brain, ArrowUpDown } from 'lucide-react'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_AUTH = import.meta.env.VITE_API_AUTH || ''
 
 interface Trade {
   id: string; symbol: string; side: string; entry_time: string; exit_time: string | null
@@ -57,7 +58,11 @@ function App() {
   const [backtestSymbol, setBacktestSymbol] = useState('')
 
   const api = useCallback(async (path: string, options?: RequestInit) => {
-    const res = await fetch(`${API_URL}${path}`, { headers: { 'Content-Type': 'application/json' }, ...options })
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (API_AUTH) {
+      headers['Authorization'] = 'Basic ' + btoa(API_AUTH)
+    }
+    const res = await fetch(`${API_URL}${path}`, { headers, ...options })
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }))
       throw new Error(err.detail || 'API Error')
