@@ -7,31 +7,77 @@ import os
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 
+from pathlib import Path
+
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app.backtester import run_backtest, run_full_backtest
 from app.config import BinanceConfig, TradingConfig, TRADING_PAIRS
-from app.ml_model import TradingModel, prepare_training_data
-from app.trading_engine import TradingEngine, TradeRecord
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+# Lazy imports for heavy ML modules (saves ~200MB at startup)
+_TradingModel = None
+_TradingEngine = None
+_TradeRecord = None
+_run_backtest = None
+_run_full_backtest = None
+_prepare_training_data = None
+
+
+def _lazy_ml():
+    global _TradingModel, _prepare_training_data
+    if _TradingModel is None:
+        from app.ml_model import TradingModel as _TM, prepare_training_data as _ptd
+        _TradingModel = _TM
+        _prepare_training_data = _ptd
+    return _TradingModel, _prepare_training_data
+
+
+def _lazy_engine():
+    global _TradingEngine, _TradeRecord
+    if _TradingEngine is None:
+        from app.trading_engine import TradingEngine as _TE, TradeRecord as _TR
+        _TradingEngine = _TE
+        _TradeRecord = _TR
+    return _TradingEngine, _TradeRecord
+
+
+def _lazy_backtest():
+    global _run_backtest, _run_full_backtest
+    if _run_backtest is None:
+        from app.backtester import run_backtest as _rb, run_full_backtest as _rfb
+        _run_backtest = _rb
+        _run_full_backtest = _rfb
+    return _run_backtest, _run_full_backtest
+
+
 # Global state
-model = TradingModel()
-engine: Optional[TradingEngine] = None
+model: Optional[object] = None
+engine: Optional[object] = None
 training_status: Dict = {"status": "idle", "progress": "", "metrics": {}}
+
+
+def _get_model():
+    global model
+    if model is None:
+        TradingModel, _ = _lazy_ml()
+        model = TradingModel()
+        if model.load():
+            logger.info("Pre-trained model loaded successfully")
+    return model
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    """Load model on startup if available."""
-    if model.load():
-        logger.info("Pre-trained model loaded successfully")
+    """Application lifespan. Model loading is deferred to first use to save memory."""
+    logger.info("Trading bot API starting up (model loads on first use)")
     yield
-    if engine and engine.is_running:
+    if engine and hasattr(engine, 'is_running') and engine.is_running:
         engine.stop()
 
 
@@ -104,10 +150,11 @@ def _get_trading_config() -> TradingConfig:
     )
 
 
-def _ensure_engine() -> TradingEngine:
+def _ensure_engine():
     global engine
     if engine is None:
-        engine = TradingEngine(model, _get_trading_config(), _get_binance_config())
+        TradingEngine, _ = _lazy_engine()
+        engine = TradingEngine(_get_model(), _get_trading_config(), _get_binance_config())
     return engine
 
 
@@ -146,7 +193,8 @@ async def update_config(config: ConfigUpdate):
         was_running = engine.is_running
         if was_running:
             engine.stop()
-        engine = TradingEngine(model, _get_trading_config(), _get_binance_config())
+        TE, _ = _lazy_engine()
+        engine = TE(_get_model(), _get_trading_config(), _get_binance_config())
         if was_running:
             engine.start()
     return {"status": "ok", "config": config.model_dump()}
@@ -157,10 +205,11 @@ async def update_config(config: ConfigUpdate):
 
 @app.get("/api/model/status")
 async def model_status():
+    m = _get_model()
     return {
-        "is_trained": model.is_trained,
-        "accuracy": model.accuracy,
-        "metrics": model.metrics,
+        "is_trained": m.is_trained,
+        "accuracy": m.accuracy,
+        "metrics": m.metrics,
         "training_status": training_status,
     }
 
@@ -172,16 +221,18 @@ def _train_model_task(pairs: List[str], num_candles: int) -> None:
         config = _get_trading_config()
         config.pairs = pairs
 
+        _, prepare_training_data = _lazy_ml()
         X, y = prepare_training_data(pairs, config, num_candles)
 
         training_status = {"status": "training", "progress": f"Training model on {X.shape[0]} samples...", "metrics": {}}
 
-        metrics = model.train(X, y)
-        model.save()
+        m = _get_model()
+        metrics = m.train(X, y)
+        m.save()
 
         training_status = {
             "status": "completed",
-            "progress": f"Training complete! Accuracy: {model.accuracy:.4f}",
+            "progress": f"Training complete! Accuracy: {m.accuracy:.4f}",
             "metrics": metrics,
         }
         logger.info(f"Model training completed: {metrics}")
@@ -201,12 +252,14 @@ async def train_model(req: TrainRequest, background_tasks: BackgroundTasks):
     return {"status": "started", "pairs": pairs, "num_candles": req.num_candles}
 
 
+
 # ── Trading Bot Control ─────────────────────────────────────────────────────
 
 
 @app.post("/api/bot/start")
 async def start_bot():
-    if not model.is_trained:
+    m = _get_model()
+    if not m.is_trained:
         raise HTTPException(400, "Model not trained yet. Train the model first.")
 
     binance_cfg = _get_binance_config()
@@ -232,18 +285,19 @@ async def stop_bot():
 async def bot_status():
     eng = _ensure_engine()
     stats = eng.get_stats()
+    m = _get_model()
     return {
         **stats,
         "testnet": _get_binance_config().testnet,
-        "model_accuracy": model.accuracy,
-        "model_trained": model.is_trained,
+        "model_accuracy": m.accuracy,
+        "model_trained": m.is_trained,
     }
 
 
 @app.post("/api/bot/scan")
 async def manual_scan():
     """Manually trigger a scan for trade signals."""
-    if not model.is_trained:
+    if not _get_model().is_trained:
         raise HTTPException(400, "Model not trained yet.")
 
     eng = _ensure_engine()
@@ -257,7 +311,7 @@ async def manual_scan():
 # ── Trades ───────────────────────────────────────────────────────────────────
 
 
-def _trade_to_dict(t: TradeRecord) -> Dict:
+def _trade_to_dict(t) -> Dict:
     return {
         "id": t.id,
         "symbol": t.symbol,
@@ -332,13 +386,15 @@ async def close_trade(trade_id: str):
 
 @app.post("/api/backtest")
 async def run_backtest_endpoint(req: BacktestRequest):
-    if not model.is_trained:
+    m = _get_model()
+    if not m.is_trained:
         raise HTTPException(400, "Model not trained yet. Train the model first.")
 
     config = _get_trading_config()
+    rb, rfb = _lazy_backtest()
 
     if req.symbol:
-        result = run_backtest(model, config, req.symbol.upper(), req.num_candles)
+        result = rb(m, config, req.symbol.upper(), req.num_candles)
         return {
             "symbol": result.symbol,
             "total_trades": result.total_trades,
@@ -356,7 +412,7 @@ async def run_backtest_endpoint(req: BacktestRequest):
     else:
         pairs = req.pairs or config.pairs
         config.pairs = pairs
-        return run_full_backtest(model, config, req.num_candles)
+        return rfb(m, config, req.num_candles)
 
 
 # ── Logs ─────────────────────────────────────────────────────────────────────
@@ -398,7 +454,8 @@ async def get_prices():
 @app.get("/api/signals")
 async def get_signals():
     """Get current ML signals for all pairs."""
-    if not model.is_trained:
+    m = _get_model()
+    if not m.is_trained:
         raise HTTPException(400, "Model not trained yet.")
 
     from app.data_fetcher import fetch_klines
@@ -416,7 +473,7 @@ async def get_signals():
             features = compute_features(candles, len(candles) - 1, htf_candles)
             if features is None:
                 continue
-            direction, confidence = model.predict(features)
+            direction, confidence = m.predict(features)
             signals.append({
                 "symbol": pair,
                 "direction": direction,
@@ -430,3 +487,23 @@ async def get_signals():
             logger.warning(f"Error getting signal for {pair}: {e}")
 
     return {"signals": sorted(signals, key=lambda s: s["confidence"], reverse=True)}
+
+
+# ── Static Frontend Serving (must be AFTER all API routes) ─────────────────
+
+_STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+if _STATIC_DIR.is_dir():
+    @app.get("/")
+    async def serve_index():
+        return FileResponse(_STATIC_DIR / "index.html")
+
+    app.mount("/assets", StaticFiles(directory=_STATIC_DIR / "assets"), name="static-assets")
+
+    @app.get("/{path:path}")
+    async def serve_spa(path: str):
+        """Catch-all for SPA client-side routing."""
+        file_path = (_STATIC_DIR / path).resolve()
+        if file_path.is_relative_to(_STATIC_DIR.resolve()) and file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(_STATIC_DIR / "index.html")

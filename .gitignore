@@ -31,5 +31,8 @@ Thumbs.db
 # Models (binary files)
 backend/models/*.pkl
 
+# Built frontend served by backend
+backend/static/
+
 # Logs
 *.log

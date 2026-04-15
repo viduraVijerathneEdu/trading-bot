@@ -69,7 +69,7 @@ class BinanceClient:
             params = self._sign(params)
 
         url = f"{self.base_url}{endpoint}"
-        if method == "GET":
+        if method in ("GET", "DELETE"):
             if params:
                 url += "?" + urllib.parse.urlencode(params)
             data = None
