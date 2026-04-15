@@ -192,7 +192,8 @@ async def update_config(config: ConfigUpdate):
         was_running = engine.is_running
         if was_running:
             engine.stop()
-        engine = TradingEngine(model, _get_trading_config(), _get_binance_config())
+        TE, _ = _lazy_engine()
+        engine = TE(_get_model(), _get_trading_config(), _get_binance_config())
         if was_running:
             engine.start()
     return {"status": "ok", "config": config.model_dump()}
